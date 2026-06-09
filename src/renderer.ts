@@ -81,8 +81,9 @@ export function renderMarkdown(text: string): string {
 }
 
 // Stream renderer: prints chunks as they arrive.
-// After the stream ends, call finish() to re-render the full response
-// with proper markdown formatting.
+// finish() adds a trailing newline. Markdown re-render is intentionally
+// skipped — the raw streamed text is readable enough and avoids cursor
+// arithmetic bugs when the assistant label is printed outside this class.
 export class StreamRenderer {
   private buffer = '';
 
@@ -91,18 +92,11 @@ export class StreamRenderer {
     process.stdout.write(chunk);
   }
 
-  // After streaming, clear raw output and re-render with markdown.
-  // Only triggers if the response actually contains markdown syntax.
   finish(): void {
-    const hasMarkdown = /[#*`_\[\]>]/.test(this.buffer);
-    if (!hasMarkdown) {
+    // Always end with a newline so the next prompt starts on a fresh line
+    if (!this.buffer.endsWith('\n')) {
       process.stdout.write('\n');
-      return;
     }
-
-    const totalLines = this.buffer.split('\n').length;
-    process.stdout.write(`\x1b[${totalLines}A\x1b[J`);
-    process.stdout.write(renderMarkdown(this.buffer));
   }
 
   getBuffer(): string {

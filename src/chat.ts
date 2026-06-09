@@ -36,6 +36,7 @@ ${chalk.bold('Slash commands:')}
   ${chalk.cyan('/save <file>')}         Export conversation to Markdown
   ${chalk.cyan('/think [on|off]')}      Toggle thinking mode (V4 Pro / R1)
   ${chalk.cyan('/effort [high|max]')}   Set reasoning depth
+  ${chalk.cyan('/showthink [on|off]')}  Show or hide the thinking process
   ${chalk.cyan('/usage')}               Toggle token usage display
   ${chalk.cyan('/exit')}                Exit  (also Ctrl+C or Ctrl+D)
 
@@ -52,6 +53,7 @@ export async function runChat(opts: ChatOptions): Promise<void> {
   const systemPrompt = opts.systemPrompt ?? cfg.systemPrompt;
   let thinking = opts.thinking ?? cfg.thinking;
   let effort: ReasoningEffort = opts.reasoningEffort ?? cfg.reasoningEffort;
+  let showThinking = false; // thinking process hidden by default
 
   const session = new Session(model, systemPrompt);
   let pendingFiles: string[] = [];
@@ -153,6 +155,19 @@ export async function runChat(opts: ChatOptions): Promise<void> {
           } else {
             console.log(chalk.dim('  Usage: /effort [high|max]\n'));
           }
+          break;
+        }
+
+        case 'showthink': {
+          if (!arg || arg === 'on') {
+            showThinking = true;
+          } else if (arg === 'off') {
+            showThinking = false;
+          } else {
+            console.log(chalk.dim('  Usage: /showthink [on|off]\n'));
+            break;
+          }
+          console.log(chalk.dim(`  Show thinking: ${showThinking ? chalk.green('on') : chalk.red('off')}\n`));
           break;
         }
 
@@ -266,9 +281,8 @@ export async function runChat(opts: ChatOptions): Promise<void> {
         process.stdout.write('\r\x1b[K');
       }
 
-      // Show thinking block if present
-      if (thinkingBuffer) {
-        process.stdout.write('\r\x1b[K');
+      // Show thinking block only if user toggled /showthink on
+      if (showThinking && thinkingBuffer) {
         printThinkingBlock(thinkingBuffer);
       }
 
