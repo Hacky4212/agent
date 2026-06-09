@@ -1,0 +1,32 @@
+{
+  "name": "deepseek-cli",
+  "version": "1.0.0",
+  "description": "A feature-rich CLI for DeepSeek AI — compatible with Termux, Linux, and Windows",
+  "type": "module",
+  "bin": {
+    "dsk": "./dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsx src/index.ts",
+    "start": "node dist/index.js",
+    "prepublishOnly": "npm run build"
+  },
+  "dependencies": {
+    "chalk": "^5.3.0",
+    "commander": "^12.1.0",
+    "conf": "^13.0.1",
+    "marked": "^12.0.0",
+    "marked-terminal": "^7.1.0",
+    "openai": "^4.52.0",
+    "ora": "^8.0.1"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "tsx": "^4.16.0",
+    "typescript": "^5.5.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
