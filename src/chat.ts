@@ -62,7 +62,7 @@ export async function runChat(opts: ChatOptions): Promise<void> {
     output: process.stdout,
     terminal: true,
     historySize: 200,
-    prompt: chalk.bold.green('you') + chalk.dim(' › '),
+    prompt: chalk.dim('› '),
   });
 
   const exit = async (code = 0) => {
@@ -218,9 +218,18 @@ export async function runChat(opts: ChatOptions): Promise<void> {
     let thinkingBuffer = '';
     const renderer = new StreamRenderer();
 
-    // Show thinking label if enabled
+    // Spinner for thinking phase
+    const spinFrames = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+    let spinIdx = 0;
+    let spinTimer: ReturnType<typeof setInterval> | null = null;
+
     if (thinking && THINKING_CAPABLE_MODELS.has(session.model)) {
-      process.stdout.write(chalk.dim('\n  💭 '));
+      process.stdout.write('\n');
+      spinTimer = setInterval(() => {
+        process.stdout.write(
+          `\r${chalk.dim(spinFrames[spinIdx++ % spinFrames.length]!)} ${chalk.dim('Thinking…')}`,
+        );
+      }, 80);
     } else {
       console.log('');
     }
@@ -246,13 +255,18 @@ export async function runChat(opts: ChatOptions): Promise<void> {
         },
         (thinkChunk) => {
           thinkingBuffer += thinkChunk;
-          // Show a live dot per thinking chunk so the user knows it's working
-          process.stdout.write(chalk.dim('.'));
         },
         abortController.signal,
       );
 
-      // Clear the dot trail, then show thinking block if present
+      // Stop spinner and clear the line
+      if (spinTimer) {
+        clearInterval(spinTimer);
+        spinTimer = null;
+        process.stdout.write('\r\x1b[K');
+      }
+
+      // Show thinking block if present
       if (thinkingBuffer) {
         process.stdout.write('\r\x1b[K');
         printThinkingBlock(thinkingBuffer);
@@ -265,6 +279,7 @@ export async function runChat(opts: ChatOptions): Promise<void> {
         printUsage(result.usage);
       }
     } catch (err: unknown) {
+      if (spinTimer) { clearInterval(spinTimer); process.stdout.write('\r\x1b[K'); }
       if (err instanceof Error && err.name === 'AbortError') {
         renderer.finish();
         console.log(chalk.dim('\n  (generation cancelled)\n'));

@@ -47,10 +47,7 @@ program
           session.getMessages(),
           {},
           (chunk) => renderer.write(chunk),
-          (tc) => {
-            thinkingBuffer += tc;
-            process.stdout.write(chalk.dim('.'));
-          },
+          (tc) => { thinkingBuffer += tc; },
         );
         if (thinkingBuffer) {
           process.stdout.write('\r\x1b[K');
@@ -133,19 +130,29 @@ program
     let thinkingBuffer = '';
     const renderer = new StreamRenderer();
 
+    // Spinner for thinking phase
+    const spinFrames = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+    let spinIdx = 0;
+    let spinTimer: ReturnType<typeof setInterval> | null = null;
+    if (thinking) {
+      spinTimer = setInterval(() => {
+        process.stdout.write(
+          `\r${chalk.dim(spinFrames[spinIdx++ % spinFrames.length]!)} ${chalk.dim('Thinking…')}`,
+        );
+      }, 80);
+    }
+
     try {
       const result = await streamChat(
         session.getMessages(),
         { model, systemPrompt, maxTokens: options.maxTokens, temperature: options.temperature, thinking, reasoningEffort: effort },
         (chunk) => renderer.write(chunk),
-        (thinkChunk) => {
-          thinkingBuffer += thinkChunk;
-          process.stdout.write(chalk.dim('.'));
-        },
+        (thinkChunk) => { thinkingBuffer += thinkChunk; },
       );
 
+      if (spinTimer) { clearInterval(spinTimer); process.stdout.write('\r\x1b[K'); }
+
       if (thinkingBuffer) {
-        process.stdout.write('\r\x1b[K');
         printThinkingBlock(thinkingBuffer);
       }
 
