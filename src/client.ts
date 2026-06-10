@@ -38,6 +38,43 @@ function supportsThinking(model: string): boolean {
   return THINKING_CAPABLE_MODELS.has(model);
 }
 
+// When tools are exposed, the model needs to know it has REAL agentic
+// capabilities on the user's machine — otherwise a conservative system prompt
+// makes it refuse ("I can't operate your computer") instead of calling a tool.
+function buildAgentSystemPrompt(): string {
+  const platform =
+    process.platform === 'win32'
+      ? 'Windows'
+      : process.platform === 'darwin'
+        ? 'macOS'
+        : 'Linux';
+  return [
+    `You are running inside a command-line tool on the user's ${platform} machine, and you have REAL tools that act on this machine right now:`,
+    `read_file, write_file, edit_file, list_dir (filesystem), run_command (run shell commands), web_fetch and web_search (internet).`,
+    `When a request can be accomplished with these tools, USE them. Do NOT tell the user to do it manually, and do NOT claim you cannot access or operate their computer — you can.`,
+    `For example: to open an application, run a program, inspect or change files, check system state, or look something up online, call the appropriate tool instead of explaining how the user could do it.`,
+    `Shell commands execute on ${platform}; use that OS's correct command syntax (e.g. on Windows, "calc" opens the calculator).`,
+    `Only describe manual steps when no available tool can do the job, or when the user has declined a tool action.`,
+  ].join(' ');
+}
+
+// Merge the agent capability prompt into the message list without mutating the
+// caller's array. Prepends to the existing system message, or adds one.
+function withAgentSystemPrompt(messages: Message[]): Message[] {
+  const agentPrompt = buildAgentSystemPrompt();
+  const result = [...messages];
+  const sysIdx = result.findIndex((m) => m.role === 'system');
+  if (sysIdx >= 0) {
+    result[sysIdx] = {
+      ...result[sysIdx]!,
+      content: `${agentPrompt}\n\n${result[sysIdx]!.content}`,
+    };
+  } else {
+    result.unshift({ role: 'system', content: agentPrompt });
+  }
+  return result;
+}
+
 // Stream a chat completion.
 // For V4 Pro, thinking deltas arrive in delta.reasoning_content;
 // the final answer arrives in delta.content as usual.
@@ -64,9 +101,13 @@ export async function streamChat(
     extraBody['thinking'] = { type: 'enabled' };
   }
 
+  const useTools = !!(opts.tools && opts.tools.length > 0);
+
   const requestParams: Record<string, unknown> = {
     model,
-    messages,
+    // When tools are exposed, inject the agent capability prompt so the model
+    // knows it can actually act on this machine instead of refusing.
+    messages: useTools ? withAgentSystemPrompt(messages) : messages,
     max_tokens: opts.maxTokens ?? cfg.maxTokens,
     temperature: opts.temperature ?? cfg.temperature,
     stream: true,
@@ -79,7 +120,7 @@ export async function streamChat(
   }
 
   // Expose tools to the model when provided
-  if (opts.tools && opts.tools.length > 0) {
+  if (useTools) {
     requestParams['tools'] = opts.tools;
     requestParams['tool_choice'] = 'auto';
   }
