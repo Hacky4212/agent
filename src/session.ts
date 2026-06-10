@@ -2,7 +2,7 @@ import { readFile, writeFile, mkdir } from 'fs/promises';
 import { existsSync } from 'fs';
 import path from 'path';
 import chalk from 'chalk';
-import { type Message } from './types.js';
+import { type Message, type ToolCall } from './types.js';
 import { getHistoryDir, truncate } from './utils.js';
 
 export interface HistoryEntry {
@@ -34,6 +34,16 @@ export class Session {
 
   addAssistant(content: string): void {
     this.messages.push({ role: 'assistant', content });
+  }
+
+  // Assistant turn that requested one or more tool calls
+  addAssistantToolCalls(content: string, toolCalls: ToolCall[]): void {
+    this.messages.push({ role: 'assistant', content, tool_calls: toolCalls });
+  }
+
+  // Result of executing a tool, answering a specific tool call
+  addToolResult(toolCallId: string, name: string, content: string): void {
+    this.messages.push({ role: 'tool', content, tool_call_id: toolCallId, name });
   }
 
   getMessages(): Message[] {
@@ -81,8 +91,28 @@ export class Session {
 
     for (const m of this.messages) {
       if (m.role === 'system') continue;
+
+      if (m.role === 'tool') {
+        lines.push(
+          `\n**Tool result** (${m.name ?? 'tool'}):\n\n\`\`\`\n${m.content}\n\`\`\`\n\n---`,
+        );
+        continue;
+      }
+
       const label = m.role === 'user' ? '**You**' : '**Assistant**';
-      lines.push(`\n${label}:\n\n${m.content}\n\n---`);
+      let body = m.content;
+
+      // Assistant turn that requested tool calls
+      if (m.tool_calls?.length) {
+        const calls = m.tool_calls
+          .map((tc) => `- \`${tc.function.name}(${tc.function.arguments})\``)
+          .join('\n');
+        body = body
+          ? `${body}\n\n_Tool calls:_\n${calls}`
+          : `_Tool calls:_\n${calls}`;
+      }
+
+      lines.push(`\n${label}:\n\n${body}\n\n---`);
     }
 
     await writeFile(filePath, lines.join('\n'), 'utf-8');

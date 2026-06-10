@@ -1,18 +1,32 @@
 import readline from 'readline';
 import chalk from 'chalk';
-import { streamChat } from './client.js';
-import { StreamRenderer, printUsage, printThinkingBlock } from './renderer.js';
+import { runAgentTurn } from './agent.js';
+import {
+  StreamRenderer,
+  printUsage,
+  printThinkingBlock,
+  printToolCall,
+  printToolResult,
+} from './renderer.js';
 import { Session } from './session.js';
 import { getConfig, getConfigValue, setConfigValue } from './config.js';
 import { readFileContexts } from './utils.js';
+import { getEnabledTools, toOpenAITools, type Tool } from './tools.js';
 import { type ChatOptions, type ReasoningEffort, THINKING_CAPABLE_MODELS } from './types.js';
 
-function buildBanner(model: string, thinking: boolean, effort: ReasoningEffort): string {
+function buildBanner(
+  model: string,
+  thinking: boolean,
+  effort: ReasoningEffort,
+  toolsOn: boolean,
+): string {
   const thinkTag = THINKING_CAPABLE_MODELS.has(model)
     ? thinking
       ? chalk.green(`think:${effort}`)
       : chalk.dim('think:off')
     : chalk.dim('think:n/a');
+
+  const toolsTag = toolsOn ? chalk.green('tools:on') : chalk.dim('tools:off');
 
   return (
     '\n' +
@@ -20,6 +34,7 @@ function buildBanner(model: string, thinking: boolean, effort: ReasoningEffort):
     chalk.dim('  ') +
     chalk.dim('model:') + chalk.cyan(model) +
     '  ' + thinkTag +
+    '  ' + toolsTag +
     chalk.dim('  — /help for commands') +
     '\n'
   );
@@ -37,6 +52,8 @@ ${chalk.bold('Slash commands:')}
   ${chalk.cyan('/think [on|off]')}      Toggle thinking mode (V4 Pro / R1)
   ${chalk.cyan('/effort [high|max]')}   Set reasoning depth
   ${chalk.cyan('/showthink [on|off]')}  Show or hide the thinking process
+  ${chalk.cyan('/tools [on|off]')}      List tools or toggle tool calling
+  ${chalk.cyan('/approve [on|off]')}    Auto-approve tool actions this session
   ${chalk.cyan('/usage')}               Toggle token usage display
   ${chalk.cyan('/exit')}                Exit  (also Ctrl+C or Ctrl+D)
 
@@ -54,6 +71,8 @@ export async function runChat(opts: ChatOptions): Promise<void> {
   let thinking = opts.thinking ?? cfg.thinking;
   let effort: ReasoningEffort = opts.reasoningEffort ?? cfg.reasoningEffort;
   let showThinking = false; // thinking process hidden by default
+  let toolsOn = cfg.toolsEnabled && (opts.tools?.length ?? 1) > 0;
+  let autoApprove = cfg.autoApproveTools; // skip confirmations this session
 
   const session = new Session(model, systemPrompt);
   let pendingFiles: string[] = [];
@@ -75,7 +94,7 @@ export async function runChat(opts: ChatOptions): Promise<void> {
     process.exit(code);
   };
 
-  console.log(buildBanner(session.model, thinking, effort));
+  console.log(buildBanner(session.model, thinking, effort, toolsOn));
   rl.prompt();
 
   rl.on('line', async (line) => {
@@ -171,6 +190,47 @@ export async function runChat(opts: ChatOptions): Promise<void> {
           break;
         }
 
+        case 'tools': {
+          if (!arg) {
+            console.log(
+              chalk.dim(`  Tool calling: ${toolsOn ? chalk.green('on') : chalk.red('off')}`),
+            );
+            for (const t of getEnabledTools()) {
+              const tag = t.needsConfirmation ? chalk.yellow('confirm') : chalk.dim('auto');
+              console.log(`    ${chalk.cyan(t.name.padEnd(14))} ${tag}  ${chalk.dim(t.description)}`);
+            }
+            console.log();
+            break;
+          }
+          if (arg === 'on') {
+            toolsOn = true;
+          } else if (arg === 'off') {
+            toolsOn = false;
+          } else {
+            console.log(chalk.dim('  Usage: /tools [on|off]\n'));
+            break;
+          }
+          console.log(chalk.dim(`  Tool calling: ${toolsOn ? chalk.green('on') : chalk.red('off')}\n`));
+          break;
+        }
+
+        case 'approve': {
+          if (!arg || arg === 'on') {
+            autoApprove = true;
+          } else if (arg === 'off') {
+            autoApprove = false;
+          } else {
+            console.log(chalk.dim('  Usage: /approve [on|off]\n'));
+            break;
+          }
+          console.log(
+            chalk.dim(`  Auto-approve tools: ${autoApprove ? chalk.green('on') : chalk.red('off')}`) +
+              (autoApprove ? chalk.yellow('  (commands run without asking)') : '') +
+              '\n',
+          );
+          break;
+        }
+
         case 'system':
           if (!arg) {
             console.log(chalk.dim('  Usage: /system <prompt>\n'));
@@ -225,26 +285,30 @@ export async function runChat(opts: ChatOptions): Promise<void> {
 
     session.addUser(userContent);
 
-    // ── Stream response ───────────────────────────────────────────────
+    // ── Stream response (agentic loop) ────────────────────────────────
     rl.pause();
     abortController = new AbortController();
+    const signal = abortController.signal;
 
     // Thinking tokens buffer (streamed separately, shown after stream ends)
     let thinkingBuffer = '';
-    const renderer = new StreamRenderer();
+    let renderer = new StreamRenderer();
+    let labelPrinted = false;
 
     // Spinner for thinking phase
     const spinFrames = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
     let spinIdx = 0;
     let spinTimer: ReturnType<typeof setInterval> | null = null;
 
-    if (thinking && THINKING_CAPABLE_MODELS.has(session.model)) {
+    const startSpinner = () => {
+      if (spinTimer || !(thinking && THINKING_CAPABLE_MODELS.has(session.model))) return;
+      spinIdx = 0;
       spinTimer = setInterval(() => {
         process.stdout.write(
           `\r${chalk.dim(spinFrames[spinIdx++ % spinFrames.length]!)} ${chalk.dim('Thinking…')}`,
         );
       }, 80);
-    }
+    };
 
     // Stop the spinner and erase its line. Safe to call multiple times.
     const stopSpinner = () => {
@@ -255,34 +319,88 @@ export async function runChat(opts: ChatOptions): Promise<void> {
       }
     };
 
+    startSpinner();
+
+    // Confirmation prompt for needs-confirmation tools. Briefly resumes the
+    // readline to read one line, racing against Ctrl+C abort.
+    const confirm = (tool: Tool, args: Record<string, unknown>): Promise<'yes' | 'no' | 'always'> => {
+      if (autoApprove) return Promise.resolve('yes');
+      stopSpinner();
+      // Show a concrete summary of what will run
+      if (tool.name === 'run_command') {
+        console.log(chalk.dim('    $ ') + chalk.white(String(args['command'] ?? '')));
+      } else if (tool.name === 'write_file') {
+        const content = String(args['content'] ?? '');
+        console.log(chalk.dim(`    write ${args['path']} (${content.length} bytes)`));
+      } else if (tool.name === 'edit_file') {
+        console.log(chalk.dim(`    edit ${args['path']}`));
+        console.log(chalk.red('    - ' + String(args['old_string'] ?? '').split('\n')[0]));
+        console.log(chalk.green('    + ' + String(args['new_string'] ?? '').split('\n')[0]));
+      }
+      return new Promise((resolve) => {
+        const onAbort = () => resolve('no');
+        signal.addEventListener('abort', onAbort, { once: true });
+        rl.resume();
+        rl.question(
+          chalk.yellow(`  Run ${tool.name}? `) + chalk.dim('[y/N/a(lways)] '),
+          (answer) => {
+            signal.removeEventListener('abort', onAbort);
+            rl.pause();
+            const a = answer.trim().toLowerCase();
+            if (a === 'a' || a === 'always') resolve('always');
+            else if (a === 'y' || a === 'yes') resolve('yes');
+            else resolve('no');
+          },
+        );
+      });
+    };
+
+    const tools =
+      cfg.toolsEnabled && toolsOn ? toOpenAITools(getEnabledTools()) : undefined;
+
     try {
-      const result = await streamChat(
-        session.getMessages(),
+      const { usage } = await runAgentTurn(
+        session,
         {
           model: session.model,
           maxTokens: opts.maxTokens,
           temperature: opts.temperature,
           thinking,
           reasoningEffort: effort,
+          tools,
         },
-        (chunk) => {
-          // First answer chunk: stop spinner, then print the assistant label.
-          // Must stop the spinner BEFORE writing, or its \r overwrites the answer.
-          if (!renderer.getBuffer()) {
+        {
+          onAnswerChunk: (chunk) => {
+            // First answer chunk: stop spinner, print the assistant label.
+            if (!labelPrinted) {
+              stopSpinner();
+              process.stdout.write(
+                '\n' + chalk.bold.blue('assistant') + chalk.dim(' ›') + '\n',
+              );
+              labelPrinted = true;
+            }
+            renderer.write(chunk);
+          },
+          onThinkChunk: (chunk) => {
+            thinkingBuffer += chunk;
+          },
+          onToolStart: (call, args) => {
             stopSpinner();
-            process.stdout.write(
-              '\n' + chalk.bold.blue('assistant') + chalk.dim(' ›') + '\n',
-            );
-          }
-          renderer.write(chunk);
+            renderer.finish();
+            printToolCall(call.function.name, args);
+          },
+          onToolResult: (call, result, ok) => {
+            printToolResult(call.function.name, result, ok);
+            // Reset for the next streamed turn in the loop
+            renderer = new StreamRenderer();
+            labelPrinted = false;
+            startSpinner();
+          },
+          confirm,
         },
-        (thinkChunk) => {
-          thinkingBuffer += thinkChunk;
-        },
-        abortController.signal,
+        signal,
       );
 
-      // Edge case: thinking ran but the answer was empty — spinner still on.
       stopSpinner();
 
       // Show thinking block only if user toggled /showthink on
@@ -291,10 +409,9 @@ export async function runChat(opts: ChatOptions): Promise<void> {
       }
 
       renderer.finish();
-      session.addAssistant(result.fullText);
 
-      if (getConfigValue('showUsage') && result.usage) {
-        printUsage(result.usage);
+      if (getConfigValue('showUsage') && usage) {
+        printUsage(usage);
       }
     } catch (err: unknown) {
       stopSpinner();

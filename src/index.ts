@@ -10,11 +10,41 @@ import {
   printConfig,
   getConfigPath,
 } from './config.js';
-import { streamChat } from './client.js';
-import { StreamRenderer, printUsage, printThinkingBlock } from './renderer.js';
+import { runAgentTurn } from './agent.js';
+import {
+  StreamRenderer,
+  printUsage,
+  printThinkingBlock,
+  printToolCall,
+  printToolResult,
+} from './renderer.js';
 import { Session, listHistory } from './session.js';
 import { readFileContexts, readStdin } from './utils.js';
+import { getEnabledTools, toOpenAITools } from './tools.js';
 import { DEFAULT_CONFIG, type ReasoningEffort } from './types.js';
+
+// Build callbacks + a non-interactive confirm for non-REPL runs (ask / pipe).
+// Destructive tools are auto-denied unless autoApprove is set (e.g. --yolo).
+function makeNonInteractiveCallbacks(renderer: StreamRenderer, autoApprove: boolean) {
+  let thinkingBuffer = '';
+  return {
+    cb: {
+      onAnswerChunk: (chunk: string) => renderer.write(chunk),
+      onThinkChunk: (chunk: string) => {
+        thinkingBuffer += chunk;
+      },
+      onToolStart: (call: { function: { name: string } }, args: Record<string, unknown>) => {
+        renderer.finish();
+        printToolCall(call.function.name, args);
+      },
+      onToolResult: (call: { function: { name: string } }, result: string, ok: boolean) => {
+        printToolResult(call.function.name, result, ok);
+      },
+      confirm: () => Promise.resolve(autoApprove ? ('yes' as const) : ('no' as const)),
+    },
+    getThinking: () => thinkingBuffer,
+  };
+}
 
 const program = new Command();
 
@@ -32,8 +62,12 @@ program
   .option('--think', 'Enable thinking mode')
   .option('--no-think', 'Disable thinking mode')
   .option('--effort <level>', 'Reasoning effort: high or max')
+  .option('--no-tools', 'Disable tool calling for this run')
+  .option('-y, --yolo', 'Run tools (incl. commands) without confirmation — dangerous')
   .action(async (options) => {
     const cfg = getConfig();
+    const toolsOn = cfg.toolsEnabled && options.tools !== false;
+    const autoApprove = cfg.autoApproveTools || Boolean(options.yolo);
 
     // ── Pipe mode: stdin is not a TTY ─────────────────────────────────
     if (!process.stdin.isTTY) {
@@ -41,20 +75,19 @@ program
       if (piped) {
         const session = new Session(cfg.model, cfg.systemPrompt);
         session.addUser(piped);
-        let thinkingBuffer = '';
         const renderer = new StreamRenderer();
-        const result = await streamChat(
-          session.getMessages(),
-          {},
-          (chunk) => renderer.write(chunk),
-          (tc) => { thinkingBuffer += tc; },
+        const { cb, getThinking } = makeNonInteractiveCallbacks(renderer, autoApprove);
+        const { usage } = await runAgentTurn(
+          session,
+          { tools: toolsOn ? toOpenAITools(getEnabledTools()) : undefined },
+          cb,
         );
-        if (thinkingBuffer) {
+        if (getThinking()) {
           process.stdout.write('\r\x1b[K');
-          printThinkingBlock(thinkingBuffer);
+          printThinkingBlock(getThinking());
         }
         renderer.finish();
-        if (cfg.showUsage && result.usage) printUsage(result.usage);
+        if (cfg.showUsage && usage) printUsage(usage);
         return;
       }
     }
@@ -80,6 +113,7 @@ program
       temperature: (options.temperature as number | undefined) ?? cfg.temperature,
       thinking,
       reasoningEffort: effort,
+      tools: toolsOn ? toOpenAITools(getEnabledTools()) : undefined,
     });
   });
 
@@ -95,8 +129,13 @@ program
   .option('--think', 'Enable thinking mode')
   .option('--no-think', 'Disable thinking mode')
   .option('--effort <level>', 'Reasoning effort: high or max')
-  .action(async (promptArg: string | undefined, options) => {
+  .option('--no-tools', 'Disable tool calling for this run')
+  .option('-y, --yolo', 'Run tools (incl. commands) without confirmation — dangerous')
+  .action(async (promptArg: string | undefined, options, command) => {
     const cfg = getConfig();
+    // -y/--yolo is declared on both root and this subcommand; commander may
+    // bind it to the parent, so read it via optsWithGlobals().
+    const yolo = Boolean(command.optsWithGlobals().yolo);
 
     let userPrompt = promptArg ?? '';
     const piped = await readStdin();
@@ -123,12 +162,14 @@ program
     const effort: ReasoningEffort =
       ((options.effort as string | undefined) as ReasoningEffort | undefined) ??
       cfg.reasoningEffort;
+    const toolsOn = cfg.toolsEnabled && options.tools !== false;
+    const autoApprove = cfg.autoApproveTools || yolo;
 
     const session = new Session(model, systemPrompt);
     session.addUser(userPrompt);
 
-    let thinkingBuffer = '';
     const renderer = new StreamRenderer();
+    const { cb, getThinking } = makeNonInteractiveCallbacks(renderer, autoApprove);
 
     // Spinner for thinking phase
     const spinFrames = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
@@ -141,8 +182,6 @@ program
         );
       }, 80);
     }
-
-    // Stop the spinner and erase its line. Safe to call multiple times.
     const stopSpinner = () => {
       if (spinTimer) {
         clearInterval(spinTimer);
@@ -150,27 +189,35 @@ program
         process.stdout.write('\r\x1b[K');
       }
     };
+    // Stop the spinner on the first streamed token of any kind.
+    const origAnswer = cb.onAnswerChunk;
+    cb.onAnswerChunk = (chunk: string) => {
+      stopSpinner();
+      origAnswer(chunk);
+    };
 
     try {
-      const result = await streamChat(
-        session.getMessages(),
-        { model, systemPrompt, maxTokens: options.maxTokens, temperature: options.temperature, thinking, reasoningEffort: effort },
-        (chunk) => {
-          // Stop spinner before writing the first answer chunk, or its \r overwrites it
-          if (!renderer.getBuffer()) stopSpinner();
-          renderer.write(chunk);
+      const { usage } = await runAgentTurn(
+        session,
+        {
+          model,
+          systemPrompt,
+          maxTokens: options.maxTokens,
+          temperature: options.temperature,
+          thinking,
+          reasoningEffort: effort,
+          tools: toolsOn ? toOpenAITools(getEnabledTools()) : undefined,
         },
-        (thinkChunk) => { thinkingBuffer += thinkChunk; },
+        cb,
       );
 
-      // Edge case: thinking ran but the answer was empty — spinner still on
       stopSpinner();
-
       renderer.finish();
 
-      if (cfg.showUsage && result.usage) {
-        printUsage(result.usage);
+      if (cfg.showUsage && usage) {
+        printUsage(usage);
       }
+      void getThinking; // thinking hidden in one-shot mode
     } catch (err: unknown) {
       stopSpinner();
       const msg = err instanceof Error ? err.message : String(err);
@@ -217,6 +264,11 @@ Keys:
   show-usage        Show token usage: true/false
   thinking          Enable thinking mode by default: true/false
   reasoning-effort  Default reasoning depth: high or max
+  tools-enabled     Enable tool calling by default: true/false
+  auto-approve-tools  Run tools without confirmation: true/false (dangerous)
+  search-provider   Web search provider: tavily or brave
+  search-api-key    API key for the web search provider
+  max-tool-iterations  Max tool-call rounds per turn (default: 10)
 `)
   .action((key: string, value: string) => {
     const camel = key.replace(/-([a-z])/g, (_, l: string) => l.toUpperCase()) as keyof typeof DEFAULT_CONFIG;

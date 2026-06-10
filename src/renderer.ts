@@ -135,3 +135,42 @@ export function printUsage(usage: Usage): void {
   ].join(' ');
   console.log('\n' + line);
 }
+
+// Print a tool call about to run (or running) in a compact dim line.
+// `args` is the parsed arguments object; shown truncated on one line.
+export function printToolCall(name: string, args: Record<string, unknown>): void {
+  const argStr = summarizeArgs(args);
+  console.log(
+    '\n' + chalk.yellow('⚙ ') + chalk.bold.yellow(name) +
+      (argStr ? chalk.dim('  ' + argStr) : ''),
+  );
+}
+
+// Print the result of a tool execution, dimmed and truncated.
+export function printToolResult(name: string, result: string, ok: boolean): void {
+  const icon = ok ? chalk.green('  ↳') : chalk.red('  ↳');
+  const preview = result.trim().split('\n').slice(0, 8);
+  const clipped = result.trim().split('\n').length > 8;
+  console.log(icon + ' ' + chalk.dim(ok ? `${name} done` : `${name} failed`));
+  for (const line of preview) {
+    console.log(chalk.dim('    ' + truncateLine(line, 100)));
+  }
+  if (clipped) console.log(chalk.dim('    …'));
+  console.log();
+}
+
+// Compact one-line summary of tool args for display
+function summarizeArgs(args: Record<string, unknown>): string {
+  const parts: string[] = [];
+  for (const [k, v] of Object.entries(args)) {
+    let val = typeof v === 'string' ? v : JSON.stringify(v);
+    val = val.replace(/\s+/g, ' ');
+    if (val.length > 60) val = val.slice(0, 57) + '...';
+    parts.push(`${k}=${val}`);
+  }
+  return parts.join(' ');
+}
+
+function truncateLine(line: string, max: number): string {
+  return line.length > max ? line.slice(0, max - 1) + '…' : line;
+}

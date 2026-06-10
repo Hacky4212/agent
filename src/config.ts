@@ -19,6 +19,11 @@ const store = new Conf<Config>({
     theme: { type: 'string', enum: ['dark', 'light'] },
     thinking: { type: 'boolean' },
     reasoningEffort: { type: 'string', enum: ['high', 'max'] },
+    toolsEnabled: { type: 'boolean' },
+    autoApproveTools: { type: 'boolean' },
+    searchProvider: { type: 'string', enum: ['tavily', 'brave'] },
+    searchApiKey: { type: 'string' },
+    maxToolIterations: { type: 'number' },
   },
 });
 
@@ -53,12 +58,12 @@ export function printConfig(): void {
 
   for (const [key, val] of entries) {
     const k = chalk.cyan(key.padEnd(maxKeyLen));
-    const v =
-      key === 'apiKey'
-        ? val
-          ? chalk.green('sk-' + '*'.repeat(20) + String(val).slice(-4))
-          : chalk.red('(not set)')
-        : chalk.white(String(val));
+    const isSecret = key === 'apiKey' || key === 'searchApiKey';
+    const v = isSecret
+      ? val
+        ? chalk.green('***' + String(val).slice(-4))
+        : chalk.red('(not set)')
+      : chalk.white(String(val));
     console.log(`  ${k}  ${v}`);
   }
 
