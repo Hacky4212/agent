@@ -42,20 +42,24 @@ function supportsThinking(model: string): boolean {
 // capabilities on the user's machine — otherwise a conservative system prompt
 // makes it refuse ("I can't operate your computer") instead of calling a tool.
 function buildAgentSystemPrompt(): string {
-  const platform =
-    process.platform === 'win32'
-      ? 'Windows'
-      : process.platform === 'darwin'
-        ? 'macOS'
-        : 'Linux';
-  return [
+  const isWin = process.platform === 'win32';
+  const platform = isWin ? 'Windows' : process.platform === 'darwin' ? 'macOS' : 'Linux';
+  const lines = [
     `You are running inside a command-line tool on the user's ${platform} machine, and you have REAL tools that act on this machine right now:`,
     `read_file, write_file, edit_file, list_dir (filesystem), run_command (run shell commands), web_fetch and web_search (internet).`,
     `When a request can be accomplished with these tools, USE them. Do NOT tell the user to do it manually, and do NOT claim you cannot access or operate their computer — you can.`,
     `For example: to open an application, run a program, inspect or change files, check system state, or look something up online, call the appropriate tool instead of explaining how the user could do it.`,
     `Shell commands execute on ${platform}; use that OS's correct command syntax (e.g. on Windows, "calc" opens the calculator).`,
+  ];
+  if (isWin) {
+    lines.push(
+      `On Windows, do NOT launch programs with "start <name>" when you are unsure the program exists — a missing target pops a blocking GUI dialog. Either run the executable directly (a missing one returns a normal non-zero exit code with an error on stderr, which you can read), or first verify it exists with "where <name>".`,
+    );
+  }
+  lines.push(
     `Only describe manual steps when no available tool can do the job, or when the user has declined a tool action.`,
-  ].join(' ');
+  );
+  return lines.join(' ');
 }
 
 // Merge the agent capability prompt into the message list without mutating the

@@ -169,6 +169,14 @@ const runCommandTool: Tool = {
         shell: true,
         cwd: ctx.cwd,
         signal: ctx.signal,
+        // windowsHide stops a subprocess's own console window from flashing up.
+        // It does NOT suppress Windows GUI error dialogs from `start` /
+        // ShellExecute ("cannot find xxx.exe") or WER hard-error boxes. Those
+        // are mitigated two ways: the agent system prompt steers the model away
+        // from `start` (so a missing program returns a non-zero exit + stderr
+        // as text instead of a modal dialog), and the timeout below kills a
+        // process left blocking on a dialog so the turn can't hang forever.
+        windowsHide: true,
       });
 
       let stdout = '';
