@@ -142,19 +142,29 @@ program
       }, 80);
     }
 
+    // Stop the spinner and erase its line. Safe to call multiple times.
+    const stopSpinner = () => {
+      if (spinTimer) {
+        clearInterval(spinTimer);
+        spinTimer = null;
+        process.stdout.write('\r\x1b[K');
+      }
+    };
+
     try {
       const result = await streamChat(
         session.getMessages(),
         { model, systemPrompt, maxTokens: options.maxTokens, temperature: options.temperature, thinking, reasoningEffort: effort },
-        (chunk) => renderer.write(chunk),
+        (chunk) => {
+          // Stop spinner before writing the first answer chunk, or its \r overwrites it
+          if (!renderer.getBuffer()) stopSpinner();
+          renderer.write(chunk);
+        },
         (thinkChunk) => { thinkingBuffer += thinkChunk; },
       );
 
-      if (spinTimer) { clearInterval(spinTimer); process.stdout.write('\r\x1b[K'); }
-
-      if (thinkingBuffer) {
-        printThinkingBlock(thinkingBuffer);
-      }
+      // Edge case: thinking ran but the answer was empty — spinner still on
+      stopSpinner();
 
       renderer.finish();
 
@@ -162,6 +172,7 @@ program
         printUsage(result.usage);
       }
     } catch (err: unknown) {
+      stopSpinner();
       const msg = err instanceof Error ? err.message : String(err);
       console.error('\n' + chalk.red(`Error: ${msg}`));
       process.exit(1);

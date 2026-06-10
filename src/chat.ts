@@ -239,15 +239,21 @@ export async function runChat(opts: ChatOptions): Promise<void> {
     let spinTimer: ReturnType<typeof setInterval> | null = null;
 
     if (thinking && THINKING_CAPABLE_MODELS.has(session.model)) {
-      process.stdout.write('\n');
       spinTimer = setInterval(() => {
         process.stdout.write(
           `\r${chalk.dim(spinFrames[spinIdx++ % spinFrames.length]!)} ${chalk.dim('Thinking…')}`,
         );
       }, 80);
-    } else {
-      console.log('');
     }
+
+    // Stop the spinner and erase its line. Safe to call multiple times.
+    const stopSpinner = () => {
+      if (spinTimer) {
+        clearInterval(spinTimer);
+        spinTimer = null;
+        process.stdout.write('\r\x1b[K');
+      }
+    };
 
     try {
       const result = await streamChat(
@@ -260,10 +266,12 @@ export async function runChat(opts: ChatOptions): Promise<void> {
           reasoningEffort: effort,
         },
         (chunk) => {
-          // First answer chunk: print assistant label, then content
+          // First answer chunk: stop spinner, then print the assistant label.
+          // Must stop the spinner BEFORE writing, or its \r overwrites the answer.
           if (!renderer.getBuffer()) {
+            stopSpinner();
             process.stdout.write(
-              '\n' + chalk.bold.blue('assistant') + chalk.dim(' › \n'),
+              '\n' + chalk.bold.blue('assistant') + chalk.dim(' ›') + '\n',
             );
           }
           renderer.write(chunk);
@@ -274,12 +282,8 @@ export async function runChat(opts: ChatOptions): Promise<void> {
         abortController.signal,
       );
 
-      // Stop spinner and clear the line
-      if (spinTimer) {
-        clearInterval(spinTimer);
-        spinTimer = null;
-        process.stdout.write('\r\x1b[K');
-      }
+      // Edge case: thinking ran but the answer was empty — spinner still on.
+      stopSpinner();
 
       // Show thinking block only if user toggled /showthink on
       if (showThinking && thinkingBuffer) {
@@ -293,7 +297,7 @@ export async function runChat(opts: ChatOptions): Promise<void> {
         printUsage(result.usage);
       }
     } catch (err: unknown) {
-      if (spinTimer) { clearInterval(spinTimer); process.stdout.write('\r\x1b[K'); }
+      stopSpinner();
       if (err instanceof Error && err.name === 'AbortError') {
         renderer.finish();
         console.log(chalk.dim('\n  (generation cancelled)\n'));

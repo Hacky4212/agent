@@ -140,6 +140,42 @@ dsk config set api-key sk-你的key
 
 ---
 
+## 更新到最新版本
+
+已经装过的设备，更新只需三步：拉新代码 → 装依赖 → 重新编译。
+
+```bash
+# 进入项目目录
+cd agent          # 或你当初 clone 的路径
+
+# 1. 拉取最新代码
+git pull
+
+# 2. 安装可能新增的依赖
+npm install
+
+# 3. 重新编译
+npm run build
+```
+
+**完成。`npm link` 不需要重新运行**——它是一个指向 `dist/` 的符号链接，`npm run build` 更新了 `dist/` 之后，`dsk` 命令自动就是新版本。
+
+验证更新成功：
+
+```bash
+dsk --version
+```
+
+> **如果 `git pull` 报冲突**（比如你本地改过配置文件），先暂存或丢弃本地改动：
+> ```bash
+> git stash      # 暂存本地改动
+> git pull
+> git stash pop  # 恢复本地改动（可能需要手动解决冲突）
+> ```
+> 注意：你的 API Key 和配置存在系统配置目录里，**不在项目文件夹**，所以 `git pull` 不会覆盖它们，更新后配置照常保留。
+
+---
+
 ## 使用
 
 ### 直接启动交互式对话
