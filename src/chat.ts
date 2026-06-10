@@ -63,6 +63,85 @@ ${chalk.bold('Keyboard shortcuts:')}
   ${chalk.cyan('↑ / ↓')}   Browse input history
 `;
 
+// Interactive arrow-key confirmation menu (Claude Code style). Renders a list
+// of options navigable with ↑/↓ (or j/k), chosen with Enter; number keys pick
+// directly, Esc/Ctrl+C cancels. Takes over stdin in raw mode for the duration,
+// then restores the REPL readline's keypress listeners so the prompt keeps
+// working afterwards.
+function promptMenu(
+  title: string,
+  options: { label: string; value: 'yes' | 'no' | 'always' }[],
+  signal: AbortSignal,
+): Promise<'yes' | 'no' | 'always'> {
+  return new Promise((resolve) => {
+    const stdin = process.stdin;
+    const canRaw = typeof stdin.setRawMode === 'function';
+    const prevRaw = stdin.isRaw; // restore exactly, don't force cooked mode
+    let selected = 0;
+    let resolved = false;
+
+    // Detach readline's keypress listeners so they don't fight the menu.
+    const prevListeners = stdin.listeners('keypress') as ((...a: unknown[]) => void)[];
+    stdin.removeAllListeners('keypress');
+    readline.emitKeypressEvents(stdin);
+
+    const render = (first: boolean) => {
+      if (!first) process.stdout.write(`\x1b[${options.length}A`);
+      for (let i = 0; i < options.length; i++) {
+        const active = i === selected;
+        const pointer = active ? chalk.cyan('❯ ') : '  ';
+        const text = active ? chalk.cyan(options[i]!.label) : chalk.dim(options[i]!.label);
+        process.stdout.write(`\x1b[2K  ${pointer}${text}\n`);
+      }
+    };
+
+    const cleanup = () => {
+      stdin.removeListener('keypress', onKey);
+      if (canRaw) stdin.setRawMode(prevRaw);
+      for (const l of prevListeners) stdin.on('keypress', l);
+    };
+
+    const finish = (value: 'yes' | 'no' | 'always') => {
+      if (resolved) return;
+      resolved = true;
+      signal.removeEventListener('abort', onAbort);
+      cleanup();
+      resolve(value);
+    };
+
+    const onAbort = () => finish('no');
+
+    function onKey(str: string, key: { name?: string; ctrl?: boolean }): void {
+      if (!key) return;
+      if ((key.ctrl && key.name === 'c') || key.name === 'escape') {
+        process.stdout.write('\n');
+        finish('no');
+      } else if (key.name === 'up' || key.name === 'k') {
+        selected = (selected - 1 + options.length) % options.length;
+        render(false);
+      } else if (key.name === 'down' || key.name === 'j') {
+        selected = (selected + 1) % options.length;
+        render(false);
+      } else if (key.name === 'return' || key.name === 'enter') {
+        process.stdout.write('\n');
+        finish(options[selected]!.value);
+      } else if (str && str >= '1' && str <= String(options.length)) {
+        selected = Number(str) - 1;
+        render(false);
+        process.stdout.write('\n');
+        finish(options[selected]!.value);
+      }
+    }
+
+    signal.addEventListener('abort', onAbort, { once: true });
+    console.log(chalk.yellow(`  ${title}`) + chalk.dim('  (↑/↓ then Enter)'));
+    if (canRaw) stdin.setRawMode(true);
+    stdin.resume();
+    stdin.on('keypress', onKey);
+    render(true);
+  });
+}
+
 // Interactive REPL — the main chat loop
 export async function runChat(opts: ChatOptions): Promise<void> {
   const cfg = getConfig();
@@ -337,22 +416,18 @@ export async function runChat(opts: ChatOptions): Promise<void> {
         console.log(chalk.red('    - ' + String(args['old_string'] ?? '').split('\n')[0]));
         console.log(chalk.green('    + ' + String(args['new_string'] ?? '').split('\n')[0]));
       }
-      return new Promise((resolve) => {
-        const onAbort = () => resolve('no');
-        signal.addEventListener('abort', onAbort, { once: true });
-        rl.resume();
-        rl.question(
-          chalk.yellow(`  Run ${tool.name}? `) + chalk.dim('[y/N/a(lways)] '),
-          (answer) => {
-            signal.removeEventListener('abort', onAbort);
-            rl.pause();
-            const a = answer.trim().toLowerCase();
-            if (a === 'a' || a === 'always') resolve('always');
-            else if (a === 'y' || a === 'yes') resolve('yes');
-            else resolve('no');
-          },
-        );
-      });
+      // Arrow-key menu: Yes / Yes, always / No (Claude Code style).
+      // rl is paused during streaming; the menu takes over stdin then restores
+      // readline's keypress listeners when done.
+      return promptMenu(
+        `Run ${tool.name}?`,
+        [
+          { label: 'Yes', value: 'yes' },
+          { label: `Yes, and don't ask again for ${tool.name}`, value: 'always' },
+          { label: 'No', value: 'no' },
+        ],
+        signal,
+      );
     };
 
     const tools =
