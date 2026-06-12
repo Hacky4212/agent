@@ -9,6 +9,7 @@
   "scripts": {
     "build": "tsc",
     "dev": "tsx src/index.ts",
+    "test": "npm run build && node tests/tools-web-fetch.test.mjs",
     "start": "node dist/index.js",
     "prepublishOnly": "npm run build"
   },

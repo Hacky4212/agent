@@ -27,6 +27,7 @@ const MAX_FILE_BYTES = 100_000;
 const MAX_OUTPUT_CHARS = 30_000;
 const COMMAND_TIMEOUT_MS = 60_000;
 const MAX_FETCH_BYTES = 500_000;
+const MAX_FETCH_REDIRECTS = 5;
 
 // ── Path sandbox ────────────────────────────────────────────────────────────
 // Resolve a user/model-supplied path against cwd and reject anything that
@@ -254,6 +255,33 @@ async function assertSafeUrl(rawUrl: string): Promise<URL> {
   return url;
 }
 
+async function fetchWithSafeRedirects(
+  startUrl: URL,
+  init: RequestInit,
+  redirectsLeft = MAX_FETCH_REDIRECTS,
+): Promise<Response> {
+  const res = await fetch(startUrl, {
+    ...init,
+    redirect: 'manual',
+  });
+
+  if (![301, 302, 303, 307, 308].includes(res.status)) {
+    return res;
+  }
+
+  if (redirectsLeft <= 0) {
+    throw new Error('too many redirects');
+  }
+
+  const location = res.headers.get('location');
+  if (!location) {
+    throw new Error(`redirect ${res.status} missing Location header`);
+  }
+
+  const nextUrl = await assertSafeUrl(new URL(location, startUrl).toString());
+  return fetchWithSafeRedirects(nextUrl, init, redirectsLeft - 1);
+}
+
 // Minimal HTML → text: strip script/style, drop tags, collapse whitespace.
 function htmlToText(html: string): string {
   return html
@@ -285,9 +313,8 @@ const webFetchTool: Tool = {
   needsConfirmation: false,
   async execute(args, ctx) {
     const url = await assertSafeUrl(requireString(args, 'url'));
-    const res = await fetch(url, {
+    const res = await fetchWithSafeRedirects(url, {
       signal: ctx.signal,
-      redirect: 'follow',
       headers: { 'user-agent': 'deepseek-cli/1.0' },
     });
     if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText}`);

@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+// MUST be first: installs the warning filter before any dependency can emit one.
+import './suppress-warnings.js';
 import { Command } from 'commander';
 import chalk from 'chalk';
 import { runChat } from './chat.js';
