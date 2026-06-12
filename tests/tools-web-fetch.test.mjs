@@ -1,5 +1,10 @@
 import assert from 'node:assert/strict';
+import { mkdtemp, mkdir, rm, symlink, writeFile } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { executeTool, getTool } from '../dist/tools.js';
+import { recoverLeakedToolCallsForTest } from '../dist/client.js';
 import { resolveToolsEnabled } from '../dist/chat.js';
 
 async function testWebFetchBlocksRedirectsToLoopbackAddresses() {
@@ -68,8 +73,63 @@ async function testWebFetchAllowsSafeRedirects() {
   }
 }
 
+async function testToolCallRecoveryKeepsExampleJson() {
+  const knownNames = new Set(['read_file']);
+  const text = [
+    'Example:',
+    '```json',
+    '{"name":"read_file","arguments":{"path":"foo.txt"}}',
+    '```',
+  ].join('\n');
+
+  const recovered = recoverLeakedToolCallsForTest(text, knownNames);
+  assert.equal(recovered.calls.length, 0);
+  assert.equal(recovered.cleanedText, text);
+}
+
+async function testReadFileBlocksDirectoryLinksOutsideWorkspace() {
+  const tool = getTool('read_file');
+  assert.ok(tool, 'read_file tool should exist');
+
+  const root = await mkdtemp(path.join(os.tmpdir(), 'agent-root-'));
+  const outside = await mkdtemp(path.join(os.tmpdir(), 'agent-outside-'));
+  const linkedPath = path.join(root, 'linked');
+  await writeFile(path.join(outside, 'secret.txt'), 'outside secret', 'utf-8');
+
+  try {
+    try {
+      if (process.platform === 'win32') {
+        await symlink(outside, linkedPath, 'junction');
+      } else {
+        await mkdir(linkedPath, { recursive: true });
+        await rm(linkedPath, { recursive: true, force: true });
+        await symlink(outside, linkedPath, 'dir');
+      }
+    } catch {
+      console.log('SKIP directory link sandbox test');
+      return;
+    }
+
+    assert.ok(existsSync(path.join(linkedPath, 'secret.txt')));
+    await assert.rejects(
+      () =>
+        executeTool(
+          tool,
+          { path: 'linked/secret.txt' },
+          { cwd: root },
+        ),
+      /escapes working directory|outside workspace/i,
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+    await rm(outside, { recursive: true, force: true });
+  }
+}
+
 await testWebFetchBlocksRedirectsToLoopbackAddresses();
 await testWebFetchAllowsSafeRedirects();
+await testToolCallRecoveryKeepsExampleJson();
+await testReadFileBlocksDirectoryLinksOutsideWorkspace();
 
 assert.equal(resolveToolsEnabled({ toolsEnabled: false }, true), false);
 assert.equal(resolveToolsEnabled({ toolsEnabled: true, tools: [] }, true), false);
