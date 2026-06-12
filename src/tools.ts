@@ -1,4 +1,4 @@
-import { readFile, writeFile, readdir, stat } from 'fs/promises';
+import { readFile, writeFile, readdir, stat, realpath } from 'fs/promises';
 import { existsSync } from 'fs';
 import path from 'path';
 import { spawn } from 'child_process';
@@ -31,17 +31,22 @@ const MAX_FETCH_REDIRECTS = 5;
 
 // ── Path sandbox ────────────────────────────────────────────────────────────
 // Resolve a user/model-supplied path against cwd and reject anything that
-// escapes the working directory. Soft sandbox: symlinks can still escape.
-function sandboxPath(ctx: ToolContext, p: string): string {
+// escapes the working directory after symlinks/junctions are resolved.
+async function sandboxPath(ctx: ToolContext, p: string): Promise<string> {
   if (typeof p !== 'string' || !p) {
     throw new Error('path is required');
   }
-  const root = path.resolve(ctx.cwd);
+  const root = await realpath(ctx.cwd);
   const resolved = path.resolve(root, p);
-  if (resolved !== root && !resolved.startsWith(root + path.sep)) {
+  const realResolved = existsSync(resolved)
+    ? await realpath(resolved)
+    : await realpath(path.dirname(resolved)).then((parent) =>
+        path.join(parent, path.basename(resolved)),
+      );
+  if (realResolved !== root && !realResolved.startsWith(root + path.sep)) {
     throw new Error(`path escapes working directory: ${p}`);
   }
-  return resolved;
+  return realResolved;
 }
 
 function requireString(args: Record<string, unknown>, key: string): string {
@@ -64,7 +69,7 @@ const readFileTool: Tool = {
   },
   needsConfirmation: false,
   async execute(args, ctx) {
-    const fp = sandboxPath(ctx, requireString(args, 'path'));
+    const fp = await sandboxPath(ctx, requireString(args, 'path'));
     if (!existsSync(fp)) throw new Error(`file not found: ${args['path']}`);
     const info = await stat(fp);
     if (info.isDirectory()) throw new Error(`${args['path']} is a directory, use list_dir`);
@@ -90,7 +95,7 @@ const writeFileTool: Tool = {
   },
   needsConfirmation: true,
   async execute(args, ctx) {
-    const fp = sandboxPath(ctx, requireString(args, 'path'));
+    const fp = await sandboxPath(ctx, requireString(args, 'path'));
     const content = requireString(args, 'content');
     const { mkdir } = await import('fs/promises');
     await mkdir(path.dirname(fp), { recursive: true });
@@ -114,7 +119,7 @@ const editFileTool: Tool = {
   },
   needsConfirmation: true,
   async execute(args, ctx) {
-    const fp = sandboxPath(ctx, requireString(args, 'path'));
+    const fp = await sandboxPath(ctx, requireString(args, 'path'));
     const oldStr = requireString(args, 'old_string');
     const newStr = requireString(args, 'new_string');
     if (!existsSync(fp)) throw new Error(`file not found: ${args['path']}`);
@@ -139,7 +144,7 @@ const listDirTool: Tool = {
   needsConfirmation: false,
   async execute(args, ctx) {
     const rel = typeof args['path'] === 'string' && args['path'] ? (args['path'] as string) : '.';
-    const dir = sandboxPath(ctx, rel);
+    const dir = await sandboxPath(ctx, rel);
     if (!existsSync(dir)) throw new Error(`directory not found: ${rel}`);
     const entries = await readdir(dir, { withFileTypes: true });
     if (entries.length === 0) return '(empty directory)';

@@ -79,6 +79,7 @@ function promptMenu(
     const prevRaw = stdin.isRaw; // restore exactly, don't force cooked mode
     let selected = 0;
     let resolved = false;
+    let cleanedUp = false;
 
     // Detach readline's keypress listeners so they don't fight the menu.
     const prevListeners = stdin.listeners('keypress') as ((...a: unknown[]) => void)[];
@@ -96,8 +97,16 @@ function promptMenu(
     };
 
     const cleanup = () => {
+      if (cleanedUp) return;
+      cleanedUp = true;
       stdin.removeListener('keypress', onKey);
-      if (canRaw) stdin.setRawMode(prevRaw);
+      if (canRaw) {
+        try {
+          stdin.setRawMode(prevRaw);
+        } catch {
+          // Best-effort cleanup: the stream may already be closing after Ctrl+C.
+        }
+      }
       for (const l of prevListeners) stdin.on('keypress', l);
     };
 

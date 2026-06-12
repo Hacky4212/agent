@@ -99,10 +99,10 @@ export async function streamChat(
 
   const effort = opts.reasoningEffort ?? cfg.reasoningEffort;
 
-  // extra_body carries DeepSeek-specific parameters the OpenAI SDK doesn't type
-  const extraBody: Record<string, unknown> = {};
+  // DeepSeek-specific request fields the OpenAI SDK doesn't type yet.
+  const deepSeekParams: Record<string, unknown> = {};
   if (useThinking) {
-    extraBody['thinking'] = { type: 'enabled' };
+    deepSeekParams['thinking'] = { type: 'enabled' };
   }
 
   const useTools = !!(opts.tools && opts.tools.length > 0);
@@ -130,7 +130,7 @@ export async function streamChat(
   }
 
   const stream = await (client.chat.completions.create as Function)(
-    { ...requestParams, ...extraBody },
+    { ...requestParams, ...deepSeekParams },
     { signal },
   ) as AsyncIterable<{
     choices: Array<{
@@ -234,9 +234,9 @@ export async function streamChat(
 }
 
 // Attempt to recover a tool call the model emitted as plain text in `content`
-// (a known DeepSeek bug). Conservative: only fires when a JSON object naming a
-// registered tool with parseable arguments is found. Returns the recovered
-// calls and the text with the leaked portion stripped out.
+// (a known DeepSeek bug). Conservative: only fires for JSON shaped like a
+// structured tool call, not ordinary examples such as {"name":"read_file"}.
+// Returns the recovered calls and the text with the leaked portion stripped out.
 function recoverLeakedToolCalls(
   text: string,
   knownNames: Set<string>,
@@ -244,8 +244,8 @@ function recoverLeakedToolCalls(
   const calls: ToolCall[] = [];
   let cleaned = text;
 
-  // Look for JSON objects (optionally fenced) shaped like a tool call:
-  //   {"name": "read_file", "arguments": {...}}
+  // Look for JSON objects (optionally fenced) shaped like leaked tool calls:
+  //   {"tool_calls": [{"function": {"name": "...", "arguments": {...}}}]}
   // or {"function": {"name": "...", "arguments": {...}}}
   const fenceRe = /```(?:json)?\s*(\{[\s\S]*?\})\s*```/g;
   const candidates: { raw: string; json: string }[] = [];
@@ -268,7 +268,15 @@ function recoverLeakedToolCalls(
     }
     if (!parsed || typeof parsed !== 'object') continue;
     const obj = parsed as Record<string, unknown>;
-    const fn = (obj['function'] as Record<string, unknown> | undefined) ?? obj;
+    const toolCalls = obj['tool_calls'];
+    const firstToolCall =
+      Array.isArray(toolCalls) && toolCalls[0] && typeof toolCalls[0] === 'object'
+        ? (toolCalls[0] as Record<string, unknown>)
+        : undefined;
+    const fn =
+      (firstToolCall?.['function'] as Record<string, unknown> | undefined) ??
+      (obj['function'] as Record<string, unknown> | undefined);
+    if (!fn) continue;
     const name = fn['name'];
     if (typeof name !== 'string' || !knownNames.has(name)) continue;
 
@@ -285,3 +293,5 @@ function recoverLeakedToolCalls(
 
   return { calls, cleanedText: cleaned };
 }
+
+export const recoverLeakedToolCallsForTest = recoverLeakedToolCalls;

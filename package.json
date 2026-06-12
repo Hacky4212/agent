@@ -3,6 +3,11 @@
   "version": "1.0.0",
   "description": "A feature-rich CLI for DeepSeek AI — compatible with Termux, Linux, and Windows",
   "type": "module",
+  "files": [
+    "dist",
+    "README.md",
+    "eazy.bat"
+  ],
   "bin": {
     "dsk": "./dist/index.js"
   },

@@ -1,146 +1,127 @@
 @echo off
-setlocal EnableExtensions DisableDelayedExpansion
-title DeepSeek CLI Easy Install
+chcp 936 >nul 2>&1
+title DeepSeek CLI 一键安装
 cd /d "%~dp0"
 
 echo ===============================================
-echo            DeepSeek CLI Easy Installer
+echo            DeepSeek CLI  一键安装向导
 echo ===============================================
 echo.
-echo  This script will:
-echo    - Check or install Node.js
-echo    - Install project dependencies
-echo    - Build the project
-echo    - Register the global command: dsk
+echo  本脚本会自动帮你完成：
+echo    - 检查 / 安装 Node.js 运行环境
+echo    - 安装项目依赖
+echo    - 编译并注册全局命令  dsk
 echo.
-echo  If Windows asks for permission, click Yes.
+echo  过程中若弹出 "是否允许此应用更改" ，请点【是】。
 echo.
 pause
 echo.
 
-REM ---- 0. Make sure this script is in the project directory. ----
+REM ---- 0. 确认在项目目录里 ----
 if not exist "package.json" (
-    echo [ERROR] package.json was not found in this folder.
-    echo         Put this script in the project root, next to package.json.
+    echo [错误] 当前文件夹里没找到 package.json
+    echo        请把本脚本放在项目文件夹里 ^(和 package.json 同一层^) 再运行。
     echo.
     pause
     exit /b 1
 )
 
-REM ---- 1. Check Node.js. ----
-echo [1/5] Checking Node.js ...
+REM ---- 1. 检查 Node.js ----
+echo [1/5] 检查 Node.js 运行环境 ...
 where node >nul 2>&1
-if not errorlevel 1 goto NODE_READY
+if %errorlevel% equ 0 goto NODE_READY
 
-echo       Node.js was not found. Starting automatic install.
-echo       Internet access is required.
+echo       未检测到 Node.js，开始自动安装（需要联网）...
 echo.
 
 where winget >nul 2>&1
-if errorlevel 1 goto INSTALL_MSI
+if %errorlevel% neq 0 goto INSTALL_MSI
 
-echo       Installing Node.js LTS with winget ...
+echo       正在通过 winget 安装 Node.js LTS（弹窗请点【是】）...
 winget install -e --id OpenJS.NodeJS.LTS --accept-source-agreements --accept-package-agreements
-if errorlevel 1 goto NODE_FAIL
 goto NODE_INSTALLED
 
 :INSTALL_MSI
-echo       winget was not found. Downloading the official Node.js installer ...
+echo       winget 不可用，改为下载官方安装包 ...
 powershell -NoProfile -Command "$ErrorActionPreference='Stop'; try { $idx = Invoke-RestMethod 'https://nodejs.org/dist/index.json'; $lts = ($idx | Where-Object { $_.lts } | Select-Object -First 1).version; $arch = if([Environment]::Is64BitOperatingSystem){'x64'}else{'x86'}; $url = 'https://nodejs.org/dist/' + $lts + '/node-' + $lts + '-' + $arch + '.msi'; Write-Host ('       Node version: ' + $lts); Invoke-WebRequest $url -OutFile ($env:TEMP + '\nodejs-lts.msi') } catch { Write-Host 'download failed'; exit 1 }"
-if errorlevel 1 goto NODE_FAIL
-echo       Installing Node.js ...
+if %errorlevel% neq 0 goto NODE_FAIL
+echo       正在安装（弹窗请点【是】）...
 msiexec /i "%TEMP%\nodejs-lts.msi" /qb
-if errorlevel 1 goto NODE_FAIL
 
 :NODE_INSTALLED
-REM Refresh PATH for this window so node, npm, and global commands are available.
+REM 刷新当前窗口的 PATH，让本次就能用上 node / npm / 全局命令
 set "PATH=%ProgramFiles%\nodejs\;%APPDATA%\npm;%PATH%"
 where node >nul 2>&1
-if not errorlevel 1 goto NODE_READY
+if %errorlevel% equ 0 goto NODE_READY
 echo.
-echo       Node.js was installed, but this window cannot see it yet.
-echo       Close this window, then run eazy.bat again.
+echo       Node.js 已安装完成，但当前窗口还认不到它。
+echo       请【关闭本窗口】，然后【重新双击】本脚本，就能继续了。
 echo.
 pause
 exit /b 0
 
 :NODE_READY
-for /f "delims=" %%v in ('node -v') do echo       Node.js is ready ^(%%v^)
-where npm >nul 2>&1
-if errorlevel 1 goto NPM_FAIL
+for /f "delims=" %%v in ('node -v') do echo       Node.js 已就绪 ^(%%v^)
 echo.
 
-REM Make sure the npm global command folder is available for dsk.
+REM 确保全局命令目录在 PATH 中（供后面的 dsk 使用）
 set "PATH=%APPDATA%\npm;%PATH%"
 
-REM ---- 2. Install dependencies. ----
-echo [2/5] Installing dependencies with npm install ...
-echo       This can take a while on first run.
+REM ---- 2. 安装依赖 ----
+echo [2/5] 安装项目依赖 (npm install)，第一次会比较慢，请耐心等待 ...
 call npm install
-if errorlevel 1 goto BUILD_FAIL
+if %errorlevel% neq 0 goto BUILD_FAIL
 echo.
 
-REM ---- 3. Build. ----
-echo [3/5] Building project with npm run build ...
+REM ---- 3. 编译 ----
+echo [3/5] 编译项目 (npm run build) ...
 call npm run build
-if errorlevel 1 goto BUILD_FAIL
+if %errorlevel% neq 0 goto BUILD_FAIL
 echo.
 
-REM ---- 4. Register global command. ----
-echo [4/5] Registering global command dsk with npm link ...
+REM ---- 4. 注册全局命令 ----
+echo [4/5] 注册全局命令 dsk (npm link) ...
 call npm link
-if errorlevel 1 goto BUILD_FAIL
+if %errorlevel% neq 0 goto BUILD_FAIL
 echo.
 
-REM ---- 5. Configure API key. This step is optional. ----
-echo [5/5] Configure DeepSeek API Key
-echo       Create one at https://platform.deepseek.com.
-echo       Press Enter to skip this step.
+REM ---- 5. 配置 API Key（可选）----
+echo [5/5] 配置 DeepSeek API Key
+echo       去 https://platform.deepseek.com 申请，没有可直接回车跳过。
 set "APIKEY="
-set /p APIKEY=       Paste API Key, then press Enter: 
+set /p APIKEY=       请粘贴 API Key 后回车:
 if not "%APIKEY%"=="" (
     call dsk config set api-key "%APIKEY%"
-    echo       API Key saved.
+    echo       API Key 已保存。
 )
 echo.
 
 echo ===============================================
-echo                 Install complete
+echo                 安装完成！
 echo.
-echo   Open any command window and run:
+echo   现在打开任意命令行窗口，输入下面这个命令即可开始：
 echo.
 echo        dsk
 echo.
-echo   To change API Key later:
-echo        dsk config set api-key YOUR_KEY
+echo   以后想改 API Key:  dsk config set api-key 你的key
 echo ===============================================
 echo.
 pause
 exit /b 0
 
-:NPM_FAIL
-echo.
-echo [ERROR] Node.js was found, but npm was not found.
-echo         Reinstall Node.js LTS, then run this script again.
-echo.
-pause
-exit /b 1
-
 :NODE_FAIL
 echo.
-echo [ERROR] Node.js automatic install failed.
-echo         This is usually a network or permission problem.
-echo         Install Node.js LTS manually from https://nodejs.org.
-echo         Then run this script again.
+echo [失败] Node.js 自动安装没成功（多半是网络问题）。
+echo        请手动到  https://nodejs.org  下载 LTS 版本安装，
+echo        装好后重新双击本脚本即可。
 echo.
 pause
 exit /b 1
 
 :BUILD_FAIL
 echo.
-echo [ERROR] Install failed.
-echo         Check the error message above.
-echo         You can run this script again after fixing the problem.
+echo [失败] 安装过程中出错了（上面有报错信息）。
+echo        可以把窗口截图发给朋友帮忙看看，或重新运行本脚本重试。
 echo.
 pause
 exit /b 1

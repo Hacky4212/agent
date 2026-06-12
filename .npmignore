@@ -1,0 +1,7 @@
+.npm-cache/
+node_modules/
+tests/
+.git/
+.vs/
+
+*.tgz
