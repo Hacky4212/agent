@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { executeTool, getTool } from '../dist/tools.js';
+import { resolveToolsEnabled } from '../dist/chat.js';
 
 async function testWebFetchBlocksRedirectsToLoopbackAddresses() {
   const tool = getTool('web_fetch');
@@ -69,4 +70,9 @@ async function testWebFetchAllowsSafeRedirects() {
 
 await testWebFetchBlocksRedirectsToLoopbackAddresses();
 await testWebFetchAllowsSafeRedirects();
+
+assert.equal(resolveToolsEnabled({ toolsEnabled: false }, true), false);
+assert.equal(resolveToolsEnabled({ toolsEnabled: true, tools: [] }, true), false);
+assert.equal(resolveToolsEnabled({}, true), true);
+
 console.log('PASS tools-web-fetch');

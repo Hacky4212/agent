@@ -90,6 +90,7 @@ export interface ChatOptions {
   thinking?: boolean;
   reasoningEffort?: ReasoningEffort;
   tools?: ToolDefinition[]; // tool definitions exposed to the model
+  toolsEnabled?: boolean;
 }
 
 // Models known to support the thinking/reasoning_effort parameters

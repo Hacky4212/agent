@@ -143,6 +143,12 @@ function promptMenu(
 }
 
 // Interactive REPL — the main chat loop
+export function resolveToolsEnabled(opts: Pick<ChatOptions, 'tools' | 'toolsEnabled'>, configToolsEnabled: boolean): boolean {
+  if (opts.toolsEnabled === false) return false;
+  if (opts.toolsEnabled === true) return (opts.tools?.length ?? 1) > 0;
+  return configToolsEnabled && (opts.tools?.length ?? 1) > 0;
+}
+
 export async function runChat(opts: ChatOptions): Promise<void> {
   const cfg = getConfig();
   const model = opts.model ?? cfg.model;
@@ -150,7 +156,7 @@ export async function runChat(opts: ChatOptions): Promise<void> {
   let thinking = opts.thinking ?? cfg.thinking;
   let effort: ReasoningEffort = opts.reasoningEffort ?? cfg.reasoningEffort;
   let showThinking = false; // thinking process hidden by default
-  let toolsOn = cfg.toolsEnabled && (opts.tools?.length ?? 1) > 0;
+  let toolsOn = resolveToolsEnabled(opts, cfg.toolsEnabled);
   let autoApprove = cfg.autoApproveTools; // skip confirmations this session
 
   const session = new Session(model, systemPrompt);

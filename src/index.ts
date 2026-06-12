@@ -115,6 +115,7 @@ program
       temperature: (options.temperature as number | undefined) ?? cfg.temperature,
       thinking,
       reasoningEffort: effort,
+      toolsEnabled: toolsOn,
       tools: toolsOn ? toOpenAITools(getEnabledTools()) : undefined,
     });
   });
