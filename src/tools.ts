@@ -28,6 +28,8 @@ const MAX_OUTPUT_CHARS = 30_000;
 const COMMAND_TIMEOUT_MS = 60_000;
 const MAX_FETCH_BYTES = 500_000;
 const MAX_FETCH_REDIRECTS = 5;
+const DEFAULT_SEARCH_RESULTS = 100;
+const MAX_SEARCH_RESULTS = 500;
 
 // ── Path sandbox ────────────────────────────────────────────────────────────
 // Resolve a user/model-supplied path against cwd and reject anything that
@@ -38,11 +40,20 @@ async function sandboxPath(ctx: ToolContext, p: string): Promise<string> {
   }
   const root = await realpath(ctx.cwd);
   const resolved = path.resolve(root, p);
-  const realResolved = existsSync(resolved)
-    ? await realpath(resolved)
-    : await realpath(path.dirname(resolved)).then((parent) =>
-        path.join(parent, path.basename(resolved)),
-      );
+  let realResolved: string;
+  if (existsSync(resolved)) {
+    realResolved = await realpath(resolved);
+  } else {
+    const missingParts: string[] = [];
+    let parent = resolved;
+    while (!existsSync(parent)) {
+      missingParts.unshift(path.basename(parent));
+      const next = path.dirname(parent);
+      if (next === parent) break;
+      parent = next;
+    }
+    realResolved = path.join(await realpath(parent), ...missingParts);
+  }
   if (realResolved !== root && !realResolved.startsWith(root + path.sep)) {
     throw new Error(`path escapes working directory: ${p}`);
   }
@@ -53,6 +64,35 @@ function requireString(args: Record<string, unknown>, key: string): string {
   const v = args[key];
   if (typeof v !== 'string') throw new Error(`${key} must be a string`);
   return v;
+}
+
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function globToRegExp(glob: string): RegExp {
+  const normalized = glob.replace(/\\/g, '/');
+  const pattern = normalized
+    .split('*')
+    .map((part) => part.split('?').map(escapeRegExp).join('[^/]'))
+    .join('.*');
+  return new RegExp(`^${pattern}$`);
+}
+
+function parseSearchLimit(args: Record<string, unknown>): number {
+  const raw = args['max_results'];
+  if (raw === undefined) return DEFAULT_SEARCH_RESULTS;
+  if (typeof raw !== 'number' || !Number.isFinite(raw) || raw < 1) {
+    throw new Error('max_results must be a positive number');
+  }
+  return Math.min(Math.floor(raw), MAX_SEARCH_RESULTS);
+}
+
+function shouldSearchFile(relativePath: string, include?: string): boolean {
+  if (!include) return true;
+  const normalized = relativePath.replace(/\\/g, '/');
+  const matcher = globToRegExp(include);
+  return matcher.test(normalized) || matcher.test(path.basename(normalized));
 }
 
 // ── File tools ──────────────────────────────────────────────────────────────
@@ -152,6 +192,85 @@ const listDirTool: Tool = {
       .map((e) => (e.isDirectory() ? `${e.name}/` : e.name))
       .sort()
       .join('\n');
+  },
+};
+
+const searchContentTool: Tool = {
+  name: 'search_content',
+  description:
+    'Search text files in the working directory with a regular expression and return path:line:content matches.',
+  parameters: {
+    type: 'object',
+    properties: {
+      path: { type: 'string', description: 'Directory or file path relative to cwd (default ".")' },
+      pattern: { type: 'string', description: 'JavaScript regular expression to search for' },
+      include: { type: 'string', description: 'Optional filename glob, for example "*.ts"' },
+      max_results: { type: 'number', description: 'Maximum matches to return (default 100, max 500)' },
+    },
+    required: ['pattern'],
+  },
+  needsConfirmation: false,
+  async execute(args, ctx) {
+    const rel = typeof args['path'] === 'string' && args['path'] ? (args['path'] as string) : '.';
+    const start = await sandboxPath(ctx, rel);
+    if (!existsSync(start)) throw new Error(`path not found: ${rel}`);
+
+    const pattern = requireString(args, 'pattern');
+    const include = typeof args['include'] === 'string' && args['include'] ? args['include'] : undefined;
+    const maxResults = parseSearchLimit(args);
+    const regex = new RegExp(pattern);
+    const root = await realpath(ctx.cwd);
+    const results: string[] = [];
+    let hitLimit = false;
+
+    async function visit(fp: string): Promise<void> {
+      if (results.length >= maxResults) {
+        hitLimit = true;
+        return;
+      }
+
+      let safePath: string;
+      try {
+        safePath = await sandboxPath(ctx, path.relative(root, fp) || '.');
+      } catch {
+        return;
+      }
+
+      const info = await stat(safePath);
+      if (info.isDirectory()) {
+        const entries = await readdir(safePath, { withFileTypes: true });
+        for (const entry of entries) {
+          if (results.length >= maxResults) {
+            hitLimit = true;
+            return;
+          }
+          await visit(path.join(safePath, entry.name));
+        }
+        return;
+      }
+
+      if (!info.isFile()) return;
+
+      const relativePath = path.relative(root, safePath) || path.basename(safePath);
+      if (!shouldSearchFile(relativePath, include)) return;
+
+      const content = await readFile(safePath, 'utf-8');
+      const lines = content.split(/\r?\n/);
+      for (let i = 0; i < lines.length; i++) {
+        regex.lastIndex = 0;
+        if (!regex.test(lines[i])) continue;
+        results.push(`${relativePath}:${i + 1}:${lines[i]}`);
+        if (results.length >= maxResults) {
+          hitLimit = true;
+          return;
+        }
+      }
+    }
+
+    await visit(start);
+    if (results.length === 0) return 'No matches found.';
+    if (hitLimit) results.push('[search results truncated]');
+    return truncate(results.join('\n'), MAX_OUTPUT_CHARS);
   },
 };
 
@@ -368,6 +487,7 @@ const ALL_TOOLS: Tool[] = [
   writeFileTool,
   editFileTool,
   listDirTool,
+  searchContentTool,
   runCommandTool,
   webFetchTool,
   webSearchTool,
